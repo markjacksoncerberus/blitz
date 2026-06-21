@@ -97,7 +97,7 @@ pub use util::{Point, decode_font_bytes};
 /// browsers don't expose system fonts. WOFF/WOFF2 inputs are decoded
 /// automatically.
 pub fn build_single_font_ctx(font_data: &[u8]) -> FontContext {
-    use parley::fontique::{Blob, Collection, CollectionOptions, GenericFamily, SourceCache};
+    use parley::fontique::{Blob, Collection, CollectionOptions, GenericFamily, Script, SourceCache};
     use std::sync::Arc;
 
     let mut ctx = FontContext {
@@ -120,6 +120,17 @@ pub fn build_single_font_ctx(font_data: &[u8]) -> FontContext {
     ] {
         ctx.collection
             .append_generic_families(generic, family_ids.iter().copied());
+    }
+    // Also register the font as the per-script *fallback* family. Without this,
+    // a glyph that the page's chosen font can't provide — e.g. a character
+    // outside a `@font-face` `unicode-range` subset, or any web font that
+    // failed to load — renders as that font's `.notdef` box instead of falling
+    // back to a readable glyph. The shaper (`parley`) consults these fallback
+    // families per script when it hits `.notdef`. We register the scripts this
+    // single bundled font is likely to cover; unknown scripts are ignored.
+    for script in ["Latn", "Grek", "Cyrl", "Armn", "Hebr", "Arab", "Zyyy"] {
+        ctx.collection
+            .append_fallbacks(Script::from_str_unchecked(script), family_ids.iter().copied());
     }
     ctx
 }

@@ -304,7 +304,34 @@ pub struct BaseDocument {
     /// it cancels all in-flight fetches tied to this document. Set via
     /// [`DocumentConfig::abort_signal`].
     pub(crate) abort_signal: Option<AbortSignal>,
+
+    /// `@font-face` subsets grouped by the (lowercased) CSS `font-family` they
+    /// declare. A single CSS family such as "Inter" is commonly split into many
+    /// `unicode-range` subset files; each is registered under its own synthetic
+    /// family name and recorded here, so font selection can offer every subset
+    /// to the shaper and let its character-map check pick the covering one.
+    pub(crate) font_face_subsets: FontFaceSubsetMap,
+    /// Monotonic counter for minting unique synthetic `@font-face` family names.
+    pub(crate) font_face_counter: u64,
 }
+
+/// One `@font-face` registered under a synthetic family name (see
+/// [`BaseDocument::font_face_subsets`]).
+#[derive(Clone, Debug)]
+pub(crate) struct FontFaceSubset {
+    /// Unique synthetic family name this subset is registered under. Chosen so
+    /// it can never collide with a real CSS `font-family`.
+    pub family: String,
+    /// Declared `@font-face` `font-weight` (defaults to 400). Used to order
+    /// candidate subsets by closeness to the requested weight.
+    pub weight: f32,
+    /// Declared `@font-face` `font-style` (defaults to normal).
+    pub style: parley::fontique::FontStyle,
+}
+
+/// `@font-face` subset groups keyed by lowercased CSS `font-family`. See
+/// [`BaseDocument::font_face_subsets`].
+pub(crate) type FontFaceSubsetMap = HashMap<String, Vec<FontFaceSubset>>;
 
 pub(crate) fn make_device(
     viewport: &Viewport,
@@ -449,6 +476,8 @@ impl BaseDocument {
             shell_provider,
             html_parser_provider,
             abort_signal: config.abort_signal,
+            font_face_subsets: HashMap::new(),
+            font_face_counter: 0,
             last_mousedown_time: None,
             mousedown_position: taffy::Point::ZERO,
             click_count: 0,
@@ -1064,11 +1093,50 @@ impl BaseDocument {
                     ..Default::default()
                 };
 
+                // Also register under a unique synthetic family name and record
+                // it against the CSS family. A CSS family is frequently split
+                // into many `@font-face` rules with disjoint `unicode-range`s
+                // (e.g. next/font emits ~14 subsets for "Inter"). Registered
+                // under one shared name with identical weight/style they would
+                // collapse to a single candidate in the shaper, so characters
+                // outside the chosen subset render as `.notdef`. Keeping each
+                // subset under its own family — and offering them all to the
+                // shaper via `expand_font_face_families` — lets parley's
+                // per-cluster char-map check select the subset that covers each
+                // character.
+                let subset_family = overrides.family_name.as_ref().map(|css_family| {
+                    self.font_face_counter += 1;
+                    let unique = format!("\u{1}blitz-ff-{}", self.font_face_counter);
+                    self.font_face_subsets
+                        .entry(css_family.to_lowercase())
+                        .or_default()
+                        .push(FontFaceSubset {
+                            family: unique.clone(),
+                            weight: overrides.weight.unwrap_or(400.0),
+                            style: overrides.style.unwrap_or(parley::fontique::FontStyle::Normal),
+                        });
+                    unique
+                });
+                let subset_override =
+                    subset_family
+                        .as_ref()
+                        .map(|name| parley::fontique::FontInfoOverride {
+                            family_name: Some(name.as_str()),
+                            weight: weight_override,
+                            style: overrides.style,
+                            ..Default::default()
+                        });
+
                 // TODO: Investigate eliminating double-box
                 let mut global_font_ctx = self.font_ctx.lock().unwrap();
                 global_font_ctx
                     .collection
                     .register_fonts(font.clone(), Some(info_override));
+                if let Some(ov) = subset_override {
+                    global_font_ctx
+                        .collection
+                        .register_fonts(font.clone(), Some(ov));
+                }
 
                 #[cfg(feature = "parallel-construct")]
                 {
@@ -1080,6 +1148,11 @@ impl BaseDocument {
                         font_ctx
                             .collection
                             .register_fonts(font.clone(), Some(info_override));
+                        if let Some(ov) = subset_override {
+                            font_ctx
+                                .collection
+                                .register_fonts(font.clone(), Some(ov));
+                        }
                     });
                 }
                 drop(global_font_ctx);

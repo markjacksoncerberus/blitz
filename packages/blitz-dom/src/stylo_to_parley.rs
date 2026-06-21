@@ -3,6 +3,7 @@ use std::borrow::Cow;
 
 use style::values::computed::Length;
 
+use crate::document::{FontFaceSubset, FontFaceSubsetMap};
 use crate::node::TextBrush;
 
 // Module of type aliases so we can refer to stylo types with nicer names
@@ -106,6 +107,7 @@ pub(crate) fn white_space_collapse(input: stylo::WhiteSpaceCollapse) -> parley::
 pub(crate) fn style(
     span_id: usize,
     style: &stylo::ComputedValues,
+    font_face_subsets: &FontFaceSubsetMap,
 ) -> parley::TextStyle<'static, 'static, TextBrush> {
     let font_styles = style.get_font();
     let itext_styles = style.get_inherited_text();
@@ -169,6 +171,12 @@ pub(crate) fn style(
         })
         .collect();
 
+    // Splice in the synthetic per-subset families for any `@font-face` family
+    // referenced here, so the shaper can pick whichever `unicode-range` subset
+    // covers each character (see `expand_font_face_subsets`).
+    let families =
+        expand_font_face_subsets(families, font_face_subsets, font_weight.value(), font_style);
+
     // Wrapping and breaking
     let word_break = match itext_styles.word_break {
         stylo::WordBreak::Normal => parley::WordBreak::Normal,
@@ -218,5 +226,187 @@ pub(crate) fn style(
         strikethrough_offset: Default::default(),
         strikethrough_size: Default::default(),
         strikethrough_brush: Default::default(),
+    }
+}
+
+/// Expand a resolved CSS font-family list so that, for every named family with
+/// registered `@font-face` `unicode-range` subsets (see
+/// [`BaseDocument::font_face_subsets`](crate::document::BaseDocument)), the
+/// synthetic per-subset families are spliced in immediately *before* that
+/// family.
+///
+/// parley's shaper walks the font stack per cluster and selects the first family
+/// whose font covers the cluster's characters, so listing each subset as its own
+/// stack entry lets it choose whichever subset's `unicode-range` covers each
+/// character — instead of collapsing the whole CSS family to a single face and
+/// rendering everything outside that face as `.notdef`.
+fn expand_font_face_subsets(
+    families: Vec<parley::FontFamilyName<'static>>,
+    subsets: &FontFaceSubsetMap,
+    weight: f32,
+    style: parley::FontStyle,
+) -> Vec<parley::FontFamilyName<'static>> {
+    if subsets.is_empty() {
+        return families;
+    }
+    let mut expanded = Vec::with_capacity(families.len());
+    for family in families {
+        if let parley::FontFamilyName::Named(name) = &family {
+            if let Some(group) = subsets.get(&name.to_lowercase()) {
+                for subset_family in select_covering_subsets(group, weight, style) {
+                    expanded.push(parley::FontFamilyName::Named(Cow::Owned(
+                        subset_family.to_owned(),
+                    )));
+                }
+            }
+        }
+        expanded.push(family);
+    }
+    expanded
+}
+
+/// From one CSS family's registered subsets, pick the group to offer the shaper:
+/// the subsets matching the requested slant (italic/oblique vs upright), and
+/// among those the ones at the weight closest to `weight`. Every subset sharing
+/// that closest weight is returned, because a single CSS family is split across
+/// many disjoint-`unicode-range` files at the same weight and style.
+fn select_covering_subsets(
+    group: &[FontFaceSubset],
+    weight: f32,
+    style: parley::FontStyle,
+) -> Vec<&str> {
+    let want_slanted = !matches!(style, parley::FontStyle::Normal);
+    let mut candidates: Vec<&FontFaceSubset> = group
+        .iter()
+        .filter(|s| !matches!(s.style, parley::FontStyle::Normal) == want_slanted)
+        .collect();
+    // If no subset matches the requested slant, offer every subset rather than
+    // dropping characters to `.notdef` — parley can synthesize the slant.
+    if candidates.is_empty() {
+        candidates = group.iter().collect();
+    }
+    let best = candidates
+        .iter()
+        .map(|s| (s.weight - weight).abs())
+        .fold(f32::INFINITY, f32::min);
+    candidates
+        .into_iter()
+        .filter(|s| (s.weight - weight).abs() == best)
+        .map(|s| s.family.as_str())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn subset(family: &str, weight: f32, style: parley::FontStyle) -> FontFaceSubset {
+        FontFaceSubset {
+            family: family.to_string(),
+            weight,
+            style,
+        }
+    }
+
+    fn family_names(families: &[parley::FontFamilyName<'static>]) -> Vec<String> {
+        families
+            .iter()
+            .map(|f| match f {
+                parley::FontFamilyName::Named(name) => name.to_string(),
+                parley::FontFamilyName::Generic(_) => "<generic>".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn offers_every_subset_at_the_closest_weight() {
+        // Two disjoint `unicode-range` subsets at weight 400, plus a 700 set.
+        let group = [
+            subset("a", 400.0, parley::FontStyle::Normal),
+            subset("b", 400.0, parley::FontStyle::Normal),
+            subset("c", 700.0, parley::FontStyle::Normal),
+        ];
+        // A regular run gets both 400 subsets together, never the 700 face.
+        assert_eq!(
+            select_covering_subsets(&group, 400.0, parley::FontStyle::Normal),
+            ["a", "b"]
+        );
+        // A bold run gets the 700 face.
+        assert_eq!(
+            select_covering_subsets(&group, 700.0, parley::FontStyle::Normal),
+            ["c"]
+        );
+        // 500 is closer to 400 than to 700.
+        assert_eq!(
+            select_covering_subsets(&group, 500.0, parley::FontStyle::Normal),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn prefers_subsets_matching_the_requested_slant() {
+        let group = [
+            subset("up", 400.0, parley::FontStyle::Normal),
+            subset("it", 400.0, parley::FontStyle::Italic),
+        ];
+        assert_eq!(
+            select_covering_subsets(&group, 400.0, parley::FontStyle::Normal),
+            ["up"]
+        );
+        assert_eq!(
+            select_covering_subsets(&group, 400.0, parley::FontStyle::Italic),
+            ["it"]
+        );
+        // Oblique is slanted, so it matches the italic face rather than upright.
+        assert_eq!(
+            select_covering_subsets(&group, 400.0, parley::FontStyle::Oblique(Some(14.0))),
+            ["it"]
+        );
+    }
+
+    #[test]
+    fn offers_all_subsets_when_no_slant_matches() {
+        let group = [
+            subset("a", 400.0, parley::FontStyle::Normal),
+            subset("b", 400.0, parley::FontStyle::Normal),
+        ];
+        // Italic requested but only upright subsets exist: offer them all and
+        // let parley synthesize the slant, rather than dropping to `.notdef`.
+        assert_eq!(
+            select_covering_subsets(&group, 400.0, parley::FontStyle::Italic),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn splices_subset_families_ahead_of_their_css_family() {
+        let mut subsets = FontFaceSubsetMap::new();
+        subsets.insert(
+            "inter".to_string(),
+            vec![
+                subset("\u{1}ff-1", 400.0, parley::FontStyle::Normal),
+                subset("\u{1}ff-2", 400.0, parley::FontStyle::Normal),
+            ],
+        );
+        // Lookup is case-insensitive ("Inter" -> "inter"); generic families and
+        // families without subsets pass through untouched.
+        let families = vec![
+            parley::FontFamilyName::Named(Cow::Borrowed("Inter")),
+            parley::FontFamilyName::Named(Cow::Borrowed("Helvetica")),
+            parley::FontFamilyName::Generic(parley::GenericFamily::SansSerif),
+        ];
+        let out = expand_font_face_subsets(families, &subsets, 400.0, parley::FontStyle::Normal);
+        assert_eq!(
+            family_names(&out),
+            ["\u{1}ff-1", "\u{1}ff-2", "Inter", "Helvetica", "<generic>"]
+        );
+    }
+
+    #[test]
+    fn expansion_is_a_no_op_without_registered_subsets() {
+        let subsets = FontFaceSubsetMap::new();
+        let families = vec![parley::FontFamilyName::Named(Cow::Borrowed("Inter"))];
+        let out = expand_font_face_subsets(families, &subsets, 400.0, parley::FontStyle::Normal);
+        assert_eq!(family_names(&out), ["Inter"]);
     }
 }

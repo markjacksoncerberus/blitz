@@ -19,6 +19,7 @@ use style::{
 
 use crate::{
     BaseDocument, ElementData, Node, NodeData,
+    document::FontFaceSubsetMap,
     layout::damage::{CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC},
     node::{
         ListItemLayout, ListItemLayoutPosition, Marker, NodeFlags, NodeKind, SpecialElementData,
@@ -621,7 +622,7 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: usize, is_multil
     let parley_style = node
         .primary_styles()
         .as_ref()
-        .map(|s| stylo_to_parley::style(node.id, s))
+        .map(|s| stylo_to_parley::style(node.id, s, &doc.font_face_subsets))
         .unwrap_or_default();
 
     let element = &mut node.data.downcast_element_mut().unwrap();
@@ -777,6 +778,7 @@ pub(crate) fn build_inline_layout_into(
     text_layout: &mut TextLayout,
     scale: f32,
     inline_context_root_node_id: usize,
+    font_face_subsets: &FontFaceSubsetMap,
 ) {
     // Get the inline context's root node's text styles
     let root_node = &nodes[inline_context_root_node_id];
@@ -788,7 +790,7 @@ pub(crate) fn build_inline_layout_into(
 
     let parley_style = root_node_style
         .as_ref()
-        .map(|s| stylo_to_parley::style(inline_context_root_node_id, s))
+        .map(|s| stylo_to_parley::style(inline_context_root_node_id, s, font_face_subsets))
         .unwrap_or_default();
 
     let root_line_height = resolve_line_height(parley_style.line_height, parley_style.font_size);
@@ -832,6 +834,7 @@ pub(crate) fn build_inline_layout_into(
             collapse_mode,
             text_transform,
             root_line_height,
+            font_face_subsets,
         );
     }
     for child_id in root_node.children.iter().copied() {
@@ -843,6 +846,7 @@ pub(crate) fn build_inline_layout_into(
             collapse_mode,
             text_transform,
             root_line_height,
+            font_face_subsets,
         );
     }
     if let Some(after_id) = root_node.after {
@@ -854,6 +858,7 @@ pub(crate) fn build_inline_layout_into(
             collapse_mode,
             text_transform,
             root_line_height,
+            font_face_subsets,
         );
     }
 
@@ -868,6 +873,7 @@ pub(crate) fn build_inline_layout_into(
         collapse_mode: WhiteSpaceCollapse,
         parent_text_transform: TextTransform,
         root_line_height: f32,
+        font_face_subsets: &FontFaceSubsetMap,
     ) {
         let node = &nodes[node_id];
 
@@ -925,6 +931,7 @@ pub(crate) fn build_inline_layout_into(
                                 collapse_mode,
                                 text_transform,
                                 root_line_height,
+                                font_face_subsets,
                             );
                         }
                     }
@@ -958,7 +965,7 @@ pub(crate) fn build_inline_layout_into(
                             // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                             let mut style = node
                                 .primary_styles()
-                                .map(|s| stylo_to_parley::style(node.id, &s))
+                                .map(|s| stylo_to_parley::style(node.id, &s, font_face_subsets))
                                 .unwrap_or_default();
 
                             // dbg!(&style);
@@ -986,6 +993,7 @@ pub(crate) fn build_inline_layout_into(
                                     collapse_mode,
                                     text_transform,
                                     root_line_height,
+                                    font_face_subsets,
                                 );
                             }
 
@@ -998,6 +1006,7 @@ pub(crate) fn build_inline_layout_into(
                                     collapse_mode,
                                     text_transform,
                                     root_line_height,
+                                    font_face_subsets,
                                 );
                             }
                             if let Some(after_id) = node.after {
@@ -1009,6 +1018,7 @@ pub(crate) fn build_inline_layout_into(
                                     collapse_mode,
                                     text_transform,
                                     root_line_height,
+                                    font_face_subsets,
                                 );
                             }
 
