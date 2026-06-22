@@ -8,6 +8,8 @@
 /out
 /wpt/output
 /wpt/*.json
+/wpt/tests
+/wpt/.triage
 /apps/wpt/output
 /sites
 .blitz-cache

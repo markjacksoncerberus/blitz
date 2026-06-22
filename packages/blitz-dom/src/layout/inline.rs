@@ -691,6 +691,28 @@ impl BaseDocument {
         // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
         // println!("\n");
 
+        // Report the baseline of the first line of text so that flex/grid containers can
+        // align items by their text baseline (e.g. `align-items: baseline`).
+        // Parley reports the baseline as an offset from the top of the content box in scaled
+        // (device) units, so we unscale it and add the top border+padding to make it relative
+        // to the node's border-box top edge, which is the origin Taffy expects.
+        //
+        // We only report a (physical) vertical baseline for horizontal writing modes. In
+        // vertical writing modes the dominant baseline runs along the inline (horizontal) axis,
+        // so a `first_baselines.y` value would be meaningless; leave it `None` in that case.
+        let is_horizontal_wm = self.nodes[node_id]
+            .primary_styles()
+            .is_none_or(|styles| styles.writing_mode.is_horizontal());
+        let first_baseline_y = is_horizontal_wm
+            .then(|| {
+                inline_layout
+                    .layout
+                    .lines()
+                    .next()
+                    .map(|line| container_pb.top + (line.metrics().baseline / scale))
+            })
+            .flatten();
+
         // Put layout back
         self.nodes[node_id]
             .data
@@ -719,7 +741,10 @@ impl BaseDocument {
         LayoutOutput {
             size,
             content_size: measured_size + padding.sum_axes(),
-            first_baselines: Point::NONE,
+            first_baselines: Point {
+                x: None,
+                y: first_baseline_y,
+            },
             top_margin: CollapsibleMarginSet::ZERO,
             bottom_margin: CollapsibleMarginSet::ZERO,
             margins_can_collapse_through: !has_styles_preventing_being_collapsed_through

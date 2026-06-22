@@ -18,6 +18,28 @@ small:
 wpt *ARGS:
   cargo run --release --package wpt {{ARGS}}
 
+## WPT compliance loop (see wpt/triage.sh and .claude/commands/wpt.md)
+
+# Build + run the suite (default: flexbox + grid), saving a parsed report.
+wpt-run *SUITES:
+  ./wpt/triage.sh run {{SUITES}}
+
+# Rank the most tractable failures to fix next (near-pass checkLayout tests + clusters).
+wpt-targets *LIMIT:
+  ./wpt/triage.sh targets {{LIMIT}}
+
+# Show the exact failing assertions ("expected X got Y") for a test.
+wpt-errors SUBSTR:
+  ./wpt/triage.sh errors {{SUBSTR}}
+
+# Freeze the current results under a label (e.g. before / after a change).
+wpt-snapshot LABEL:
+  ./wpt/triage.sh snapshot {{LABEL}}
+
+# Diff two snapshots: net improvements and regressions.
+wpt-compare BEFORE AFTER:
+  ./wpt/triage.sh compare {{BEFORE}} {{AFTER}}
+
 browser *ARGS:
   cargo run --release --package browser --features log_frame_times,log_phase_times {{ARGS}}
 
