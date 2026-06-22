@@ -147,10 +147,55 @@ pub fn walk_tree(indent: usize, node: &Node) {
     }
 }
 
+/// Parse an SVG document, leaving `currentColor` at its usvg default (black).
+///
+/// Use this when no element context is available (intrinsic sizing, or inline
+/// `<svg>` which already substitutes `currentColor` during DOM serialization —
+/// see `Node::write_outer_html`).
 #[cfg(feature = "svg")]
-pub(crate) fn parse_svg(source: &[u8]) -> Result<usvg::Tree, usvg::Error> {
+pub fn parse_svg(source: &[u8]) -> Result<usvg::Tree, usvg::Error> {
+    parse_svg_inner(source, None)
+}
+
+/// Parse an SVG document, resolving `currentColor` against `current_color`.
+///
+/// usvg 0.46 exposes no direct "current color" option. It resolves
+/// `currentColor` from the nearest ancestor's `color` presentation attribute
+/// (defaulting to black), so we inject `svg { color: ... }` through usvg's
+/// stylesheet hook. usvg applies that as the root's `color` attribute, and
+/// because `color` is inheritable in SVG, every `currentColor` below it
+/// resolves to the element's computed CSS `color` — matching how browsers tint
+/// `currentColor` icons.
+#[cfg(feature = "svg")]
+pub fn parse_svg_with_current_color(
+    source: &[u8],
+    current_color: AbsoluteColor,
+) -> Result<usvg::Tree, usvg::Error> {
+    parse_svg_inner(source, Some(current_color))
+}
+
+#[cfg(feature = "svg")]
+fn parse_svg_inner(
+    source: &[u8],
+    current_color: Option<AbsoluteColor>,
+) -> Result<usvg::Tree, usvg::Error> {
+    let style_sheet = current_color.map(|color| {
+        // Convert to sRGB and clamp: wide-gamut colors can map to out-of-[0,1]
+        // components, and we want a plain, parseable `rgba()` for usvg.
+        let [r, g, b, a] = color.as_color_color().components;
+        let channel = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+        format!(
+            "svg{{color:rgba({},{},{},{})}}",
+            channel(r),
+            channel(g),
+            channel(b),
+            a.clamp(0.0, 1.0),
+        )
+    });
+
     let options = usvg::Options {
         fontdb: Arc::clone(&*FONT_DB),
+        style_sheet,
         ..Default::default()
     };
 
@@ -169,6 +214,77 @@ impl ToColorColor for AbsoluteColor {
                 .to_color_space(style::color::ColorSpace::Srgb)
                 .raw_components(),
         )
+    }
+}
+
+#[cfg(all(test, feature = "svg"))]
+pub(crate) mod svg_tests {
+    use super::{parse_svg, parse_svg_with_current_color};
+    use style::color::AbsoluteColor;
+
+    /// A filled rect using `currentColor` — the canonical icon pattern.
+    const FILL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="currentColor"/></svg>"#;
+    /// A stroked path using `currentColor`, no fill.
+    const STROKE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><path d="M0 0 L10 10" fill="none" stroke="currentColor" stroke-width="2"/></svg>"#;
+
+    fn first_path(tree: &usvg::Tree) -> &usvg::Path {
+        fn find(node: &usvg::Node) -> Option<&usvg::Path> {
+            match node {
+                usvg::Node::Path(path) => Some(path),
+                usvg::Node::Group(group) => group.children().iter().find_map(find),
+                _ => None,
+            }
+        }
+        tree.root()
+            .children()
+            .iter()
+            .find_map(find)
+            .expect("expected a path")
+    }
+
+    fn paint_color(paint: &usvg::Paint) -> usvg::Color {
+        match paint {
+            usvg::Paint::Color(color) => *color,
+            _ => panic!("expected a solid color paint"),
+        }
+    }
+
+    /// The first filled path's solid color — exposed for the `element` tests.
+    pub(crate) fn first_fill_color(tree: &usvg::Tree) -> usvg::Color {
+        paint_color(first_path(tree).fill().expect("expected a fill").paint())
+    }
+
+    #[test]
+    fn current_color_defaults_to_black() {
+        let color = first_fill_color(&parse_svg(FILL_SVG).unwrap());
+        assert_eq!((color.red, color.green, color.blue), (0, 0, 0));
+    }
+
+    #[test]
+    fn current_color_resolves_fill() {
+        let red = AbsoluteColor::srgb_legacy(255, 0, 0, 1.0);
+        let color = first_fill_color(&parse_svg_with_current_color(FILL_SVG, red).unwrap());
+        assert_eq!((color.red, color.green, color.blue), (255, 0, 0));
+    }
+
+    #[test]
+    fn current_color_resolves_stroke() {
+        let green = AbsoluteColor::srgb_legacy(0, 128, 0, 1.0);
+        let tree = parse_svg_with_current_color(STROKE_SVG, green).unwrap();
+        let stroke = first_path(&tree).stroke().expect("expected a stroke");
+        let color = paint_color(stroke.paint());
+        assert_eq!((color.red, color.green, color.blue), (0, 128, 0));
+    }
+
+    #[test]
+    fn current_color_alpha_becomes_fill_opacity() {
+        // `currentColor` carries its alpha into the paint's opacity.
+        let translucent = AbsoluteColor::srgb_legacy(255, 0, 0, 0.5);
+        let tree = parse_svg_with_current_color(FILL_SVG, translucent).unwrap();
+        let fill = first_path(&tree).fill().expect("expected a fill");
+        let color = paint_color(fill.paint());
+        assert_eq!((color.red, color.green, color.blue), (255, 0, 0));
+        assert!((fill.opacity().get() - 0.5).abs() < 0.01);
     }
 }
 

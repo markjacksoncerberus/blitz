@@ -59,7 +59,7 @@ pub struct FontFaceOverrides {
 pub enum Resource {
     Image(ImageType, u32, u32, Arc<Vec<u8>>),
     #[cfg(feature = "svg")]
-    Svg(ImageType, Arc<usvg::Tree>),
+    Svg(ImageType, Arc<usvg::Tree>, Arc<[u8]>),
     Css(DocumentStyleSheet),
     Font(Bytes, FontFaceOverrides),
     None,
@@ -535,7 +535,15 @@ impl ImageHandler {
         let svg_err = {
             use crate::util::parse_svg;
             match parse_svg(&bytes) {
-                Ok(tree) => return Ok(Resource::Svg(self.kind, Arc::new(tree))),
+                // Retain the source so `currentColor` can be re-resolved per
+                // referencing element at paint time.
+                Ok(tree) => {
+                    return Ok(Resource::Svg(
+                        self.kind,
+                        Arc::new(tree),
+                        Arc::from(bytes.as_ref()),
+                    ));
+                }
                 Err(e) => e.to_string(),
             }
         };

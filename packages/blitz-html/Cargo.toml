@@ -25,6 +25,8 @@ xml5ever = { workspace = true }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
-blitz-paint = { workspace = true }
+# `svg` enables the SVG paint path (and, via unification, `blitz-dom/svg`) so
+# paint tests can exercise SVG image rendering.
+blitz-paint = { workspace = true, features = ["svg"] }
 anyrender = { workspace = true }
 anyrender_vello_cpu = { workspace = true }

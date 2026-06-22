@@ -277,9 +277,13 @@ impl ElementCx<'_, '_> {
         let Some(bg_image) = layer.image_data else {
             return;
         };
-        let ImageData::Svg(svg) = &bg_image.image else {
+        let ImageData::Svg(svg_data) = &bg_image.image else {
             return;
         };
+
+        // Resolve `currentColor` against this element's computed `color`.
+        let resolved = svg_data.resolve_tree(self.style.clone_color());
+        let svg = resolved.as_ref();
 
         let frame_w = (self.frame.padding_box.width() / self.scale) as f32;
         let frame_h = (self.frame.padding_box.height() / self.scale) as f32;

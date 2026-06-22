@@ -468,7 +468,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             element,
             transform,
             #[cfg(feature = "svg")]
-            svg: element.svg_data(),
+            svg: element.svg_image_data(),
             text_input: element.text_input_data(),
             list_item: element.list_item_data.as_deref(),
             devtools: self.dom.devtools(),
@@ -514,7 +514,7 @@ struct ElementCx<'dom, 'a> {
     element: &'dom ElementData,
     transform: Affine,
     #[cfg(feature = "svg")]
-    svg: Option<&'dom usvg::Tree>,
+    svg: Option<&'dom blitz_dom::node::SvgImageData>,
     text_input: Option<&'dom TextInputData>,
     list_item: Option<&'dom ListItemLayout>,
     devtools: &'dom DevtoolSettings,
@@ -704,9 +704,15 @@ impl ElementCx<'_, '_> {
     fn draw_svg(&self, scene: &mut impl PaintScene) {
         use style::properties::generated::longhands::object_fit::computed_value::T as ObjectFit;
 
-        let Some(svg) = self.svg else {
+        let Some(svg_data) = self.svg else {
             return;
         };
+
+        // Resolve `currentColor` against this element's computed `color` so
+        // icon-style SVGs (`fill="currentColor"`) tint correctly instead of
+        // falling back to usvg's default black. Memoized on the image data.
+        let resolved = svg_data.resolve_tree(self.style.clone_color());
+        let svg = resolved.as_ref();
 
         let width = self.frame.content_box.width() as u32;
         let height = self.frame.content_box.height() as u32;

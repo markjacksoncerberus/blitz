@@ -7,6 +7,8 @@ use crate::net::{
     Resource, ResourceHandler, ResourceLoadResponse, StylesheetHandler, StylesheetLoader,
 };
 use crate::node::{ImageData, NodeFlags, RasterImageData, SpecialElementData, Status, TextBrush};
+#[cfg(feature = "svg")]
+use crate::node::SvgImageData;
 use crate::selection::TextSelection;
 use crate::stylo_to_cursor_icon::stylo_to_cursor_icon;
 use crate::traversal::TreeTraverser;
@@ -1067,9 +1069,9 @@ impl BaseDocument {
                 self.apply_loaded_image(url, image);
             }
             #[cfg(feature = "svg")]
-            Resource::Svg(_kind, tree) => {
+            Resource::Svg(_kind, tree, source) => {
                 // Create the ImageData and cache it
-                let image = ImageData::Svg(tree);
+                let image = ImageData::Svg(SvgImageData::new(tree, source));
 
                 let Some(url) = res.resolved_url.as_ref() else {
                     return;

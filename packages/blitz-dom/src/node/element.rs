@@ -25,6 +25,11 @@ use crate::layout::table::TableContext;
 #[cfg(feature = "custom-widget")]
 use super::custom_widget::CustomWidgetData;
 
+#[cfg(feature = "svg")]
+use std::cell::RefCell;
+#[cfg(feature = "svg")]
+use style::color::AbsoluteColor;
+
 macro_rules! local_names {
     ($($name:tt),+) => {
         [$(local_name!($name),)+]
@@ -239,6 +244,14 @@ impl ElementData {
 
     #[cfg(feature = "svg")]
     pub fn svg_data(&self) -> Option<&usvg::Tree> {
+        match self.image_data()? {
+            ImageData::Svg(data) => Some(&data.tree),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "svg")]
+    pub fn svg_image_data(&self) -> Option<&SvgImageData> {
         match self.image_data()? {
             ImageData::Svg(data) => Some(data),
             _ => None,
@@ -495,17 +508,99 @@ impl RasterImageData {
     }
 }
 
+/// A decoded SVG image, retaining its source so `currentColor` can be resolved
+/// against each referencing element's computed `color` at paint time.
+///
+/// usvg bakes `currentColor` into concrete colors at parse time (defaulting to
+/// black), so a single parsed tree cannot be re-tinted. Instead we keep the
+/// source and re-parse against each element's computed `color`, memoizing the
+/// last result so repeated paints of an unchanged element are free.
+#[cfg(feature = "svg")]
+#[derive(Debug, Clone)]
+pub struct SvgImageData {
+    /// Tree parsed with the default `currentColor` (black). Used for intrinsic
+    /// sizing, and as a fallback when there is no source to re-resolve against,
+    /// the source uses no `currentColor`, or re-parsing fails.
+    pub tree: Arc<usvg::Tree>,
+    /// The raw SVG source. Empty for inline `<svg>`, which already substitutes
+    /// `currentColor` during DOM serialization (see `Node::write_outer_html`).
+    pub source: Arc<[u8]>,
+    /// Whether `source` references `currentColor` at all. When `false`,
+    /// resolution is a no-op and `tree` is returned directly — the common case
+    /// for photos/logos and the cheap guard that keeps non-icon SVGs off the
+    /// re-parse path entirely.
+    uses_current_color: bool,
+    /// Memoized recolor: the last computed `color` (as sRGB components) and the
+    /// tree it produced. Single-entry: an element's `color` rarely changes
+    /// between frames, and each element owns its own `SvgImageData` clone, so
+    /// there is no cross-element thrashing.
+    recolor_cache: RefCell<Option<([f32; 4], Arc<usvg::Tree>)>>,
+}
+
+#[cfg(feature = "svg")]
+impl SvgImageData {
+    pub fn new(tree: Arc<usvg::Tree>, source: Arc<[u8]>) -> Self {
+        let uses_current_color = source_uses_current_color(&source);
+        Self {
+            tree,
+            source,
+            uses_current_color,
+            recolor_cache: RefCell::new(None),
+        }
+    }
+
+    /// Returns the SVG tree with `currentColor` resolved against `current_color`.
+    ///
+    /// Memoized by color; falls back to the default-parsed [`Self::tree`] when
+    /// the source uses no `currentColor`, is empty (inline `<svg>`), or fails to
+    /// re-parse. The returned `Arc` is cheap to clone.
+    pub fn resolve_tree(&self, current_color: AbsoluteColor) -> Arc<usvg::Tree> {
+        if !self.uses_current_color {
+            return self.tree.clone();
+        }
+
+        // Key on the resolved sRGB components: two `AbsoluteColor`s that inject
+        // the same color share a cache entry, and identical input hits exactly.
+        let key = crate::util::ToColorColor::as_color_color(&current_color).components;
+
+        if let Some((cached_key, tree)) = &*self.recolor_cache.borrow() {
+            if *cached_key == key {
+                return tree.clone();
+            }
+        }
+
+        let tree = match crate::util::parse_svg_with_current_color(&self.source, current_color) {
+            Ok(tree) => Arc::new(tree),
+            Err(_) => self.tree.clone(),
+        };
+        *self.recolor_cache.borrow_mut() = Some((key, tree.clone()));
+        tree
+    }
+}
+
+/// Whether the SVG source references the `currentColor` keyword (which CSS
+/// treats case-insensitively) anywhere. Scanned once at construction.
+#[cfg(feature = "svg")]
+fn source_uses_current_color(source: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"currentcolor";
+    source
+        .windows(NEEDLE.len())
+        .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+}
+
 #[derive(Debug, Clone)]
 pub enum ImageData {
     Raster(RasterImageData),
     #[cfg(feature = "svg")]
-    Svg(Arc<usvg::Tree>),
+    Svg(SvgImageData),
     None,
 }
 #[cfg(feature = "svg")]
 impl From<usvg::Tree> for ImageData {
     fn from(value: usvg::Tree) -> Self {
-        Self::Svg(Arc::new(value))
+        // Inline `<svg>` resolves `currentColor` ahead of parsing, so no source
+        // is retained for re-resolution.
+        Self::Svg(SvgImageData::new(Arc::new(value), Arc::from(&[][..])))
     }
 }
 
@@ -693,3 +788,85 @@ mod file_data {
 }
 #[cfg(feature = "file_input")]
 pub use file_data::FileData;
+
+#[cfg(all(test, feature = "svg"))]
+mod svg_image_data_tests {
+    use super::{SvgImageData, source_uses_current_color};
+    use crate::util::parse_svg;
+    use crate::util::svg_tests::first_fill_color;
+    use std::sync::Arc;
+    use style::color::AbsoluteColor;
+
+    const ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="currentColor"/></svg>"#;
+    const PLAIN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>"#;
+
+    fn data(source: &'static [u8]) -> SvgImageData {
+        SvgImageData::new(Arc::new(parse_svg(source).unwrap()), Arc::from(source))
+    }
+
+    fn red() -> AbsoluteColor {
+        AbsoluteColor::srgb_legacy(255, 0, 0, 1.0)
+    }
+
+    fn blue() -> AbsoluteColor {
+        AbsoluteColor::srgb_legacy(0, 0, 255, 1.0)
+    }
+
+    #[test]
+    fn detects_current_color_case_insensitively() {
+        assert!(source_uses_current_color(b"<rect fill=\"currentColor\"/>"));
+        assert!(source_uses_current_color(b"<rect fill=\"CURRENTCOLOR\"/>"));
+        assert!(source_uses_current_color(b"<rect stroke=\"CurrentColor\"/>"));
+        assert!(!source_uses_current_color(b"<rect fill=\"red\"/>"));
+        assert!(!source_uses_current_color(b""));
+    }
+
+    #[test]
+    fn resolve_tree_recolors_against_current_color() {
+        let color = first_fill_color(&data(ICON).resolve_tree(red()));
+        assert_eq!((color.red, color.green, color.blue), (255, 0, 0));
+    }
+
+    #[test]
+    fn resolve_tree_memoizes_same_color() {
+        let data = data(ICON);
+        let first = data.resolve_tree(red());
+        let second = data.resolve_tree(red());
+        // Same color → same cached Arc, no re-parse.
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn resolve_tree_reparses_on_color_change() {
+        let data = data(ICON);
+        let red_tree = data.resolve_tree(red());
+        let blue_tree = data.resolve_tree(blue());
+        assert!(!Arc::ptr_eq(&red_tree, &blue_tree));
+
+        let red_color = first_fill_color(&red_tree);
+        let blue_color = first_fill_color(&blue_tree);
+        assert_eq!((red_color.red, red_color.green, red_color.blue), (255, 0, 0));
+        assert_eq!((blue_color.red, blue_color.green, blue_color.blue), (0, 0, 255));
+
+        // Falling back to a previously seen color re-hits nothing stale: it
+        // re-parses (single-entry cache) but yields the correct color.
+        let red_again = data.resolve_tree(red());
+        let again = first_fill_color(&red_again);
+        assert_eq!((again.red, again.green, again.blue), (255, 0, 0));
+    }
+
+    #[test]
+    fn resolve_tree_short_circuits_without_current_color() {
+        let data = data(PLAIN);
+        // No `currentColor` in the source → the base tree is returned untouched.
+        assert!(Arc::ptr_eq(&data.resolve_tree(blue()), &data.tree));
+    }
+
+    #[test]
+    fn resolve_tree_uses_base_tree_for_inline_svg() {
+        // Inline `<svg>` retains no source; resolution is a no-op.
+        let tree = Arc::new(parse_svg(ICON).unwrap());
+        let data = SvgImageData::new(tree.clone(), Arc::from(&[][..]));
+        assert!(Arc::ptr_eq(&data.resolve_tree(red()), &tree));
+    }
+}

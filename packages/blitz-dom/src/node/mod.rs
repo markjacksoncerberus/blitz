@@ -17,4 +17,6 @@ pub use element::{
     Marker, RasterImageData, SpecialElementData, SpecialElementType, Status, TextBrush,
     TextInputData, TextLayout,
 };
+#[cfg(feature = "svg")]
+pub use element::SvgImageData;
 pub use node::*;
