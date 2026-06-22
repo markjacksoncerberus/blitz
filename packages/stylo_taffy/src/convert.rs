@@ -298,6 +298,11 @@ pub fn item_alignment(input: stylo::AlignFlags) -> Option<taffy::AlignItems> {
         stylo::AlignFlags::RIGHT => Some(taffy::AlignItems::End),
         stylo::AlignFlags::CENTER => Some(taffy::AlignItems::Center),
         stylo::AlignFlags::BASELINE => Some(taffy::AlignItems::Baseline),
+        // Taffy has no last-baseline variant, so approximate it with first-baseline
+        // alignment. This is exact for the common case of a box with a single baseline
+        // (first baseline == last baseline) and is much closer than the previous fallback
+        // (which dropped through to `None`, inheriting the container's `align-items`).
+        stylo::AlignFlags::LAST_BASELINE => Some(taffy::AlignItems::Baseline),
         // Should never be hit. But no real reason to panic here.
         _ => None,
     }
