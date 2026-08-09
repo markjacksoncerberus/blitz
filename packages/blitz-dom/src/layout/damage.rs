@@ -82,6 +82,17 @@ impl BaseDocument {
         // have changed, then we should clear it's layout cache.
         if damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX) {
             node.cache.clear();
+            // Clearing the cache means "this node will be laid out again", so its
+            // previous layout must not be readable as if it were the new one.
+            // `content_size` in particular is only written by the layout paths
+            // that compute it: an element that becomes inline-level is measured
+            // rather than block-laid-out, nothing overwrites the field, and the
+            // node keeps reporting the content size it had as a block — a
+            // `scrollWidth` from a layout that no longer exists. A freshly parsed
+            // document reports zero there, so zeroing it here is also what makes
+            // an incrementally updated document agree with a re-parsed one.
+            node.unrounded_layout.content_size = taffy::Size::ZERO;
+            node.final_layout.content_size = taffy::Size::ZERO;
             if let Some(inline_layout) = node
                 .data
                 .downcast_element_mut()
@@ -490,6 +501,12 @@ impl BaseDocument {
             // In incremental mode this is handled as part of damage propagation.
             if NON_INCREMENTAL {
                 node.cache.clear();
+                // See the matching note at the damage-driven cache clear above:
+                // a stale `content_size` outliving the layout that produced it is
+                // how a re-used document starts reporting a `scrollWidth` no
+                // current box has.
+                node.unrounded_layout.content_size = taffy::Size::ZERO;
+                node.final_layout.content_size = taffy::Size::ZERO;
                 if let Some(inline_layout) = node
                     .data
                     .downcast_element_mut()
