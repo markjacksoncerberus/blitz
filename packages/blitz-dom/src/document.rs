@@ -893,7 +893,8 @@ impl BaseDocument {
                         let resolved_href = self.resolve_url(href);
                         self.net_provider.fetch(
                             self.id(),
-                            self.build_request(resolved_href.clone()),
+                            self.build_request(resolved_href.clone())
+                                .kind(blitz_traits::net::ResourceKind::Style),
                             ResourceHandler::boxed(
                                 self.tx.clone(),
                                 self.id,

@@ -48,7 +48,24 @@ pub struct Request {
     pub headers: HeaderMap,
     pub body: Body,
     pub signal: Option<AbortSignal>,
+    /// What the document will USE the response as. A net provider enforcing a
+    /// per-destination policy (Content Security Policy's `font-src`/`img-src`/
+    /// `style-src`) needs this — the URL alone cannot say whether bytes are
+    /// about to become a stylesheet or a font.
+    pub kind: ResourceKind,
 }
+
+/// The destination of a sub-resource fetch, in CSP's terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResourceKind {
+    #[default]
+    Unknown,
+    Style,
+    Font,
+    Image,
+    Media,
+}
+
 impl Request {
     /// A get request to the specified Url and an empty body
     pub fn get(url: Url) -> Self {
@@ -59,11 +76,17 @@ impl Request {
             headers: HeaderMap::new(),
             body: Body::Empty,
             signal: None,
+            kind: ResourceKind::Unknown,
         }
     }
 
     pub fn signal(mut self, signal: AbortSignal) -> Self {
         self.signal = Some(signal);
+        self
+    }
+
+    pub fn kind(mut self, kind: ResourceKind) -> Self {
+        self.kind = kind;
         self
     }
 }

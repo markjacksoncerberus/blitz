@@ -793,7 +793,9 @@ impl<'doc> DocumentMutator<'doc> {
 
         self.doc.net_provider.fetch(
             self.doc.id(),
-            self.doc.build_request(url),
+            self.doc
+                .build_request(url)
+                .kind(blitz_traits::net::ResourceKind::Style),
             Box::new(handler),
         );
     }
@@ -852,7 +854,9 @@ impl<'doc> DocumentMutator<'doc> {
 
                 self.doc.net_provider.fetch(
                     self.doc.id(),
-                    self.doc.build_request(src),
+                    self.doc
+                        .build_request(src)
+                        .kind(blitz_traits::net::ResourceKind::Image),
                     ResourceHandler::boxed(
                         self.doc.tx.clone(),
                         self.doc.id(),
