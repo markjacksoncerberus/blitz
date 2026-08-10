@@ -175,6 +175,45 @@ impl BaseDocument {
                     }
                 }
 
+                // An <iframe> is a replaced element with the CSS default object
+                // size (300×150) as its intrinsic size; width/height attributes
+                // override it (HTML §dimension-attributes), CSS overrides both.
+                // Without this an iframe generated NO box at all and reported
+                // 0×0 to every CSSOM-View metric.
+                if *element_data.name.local == *"iframe" {
+                    let attr_size = taffy::Size {
+                        width: element_data
+                            .attr(local_name!("width"))
+                            .and_then(|val| val.parse::<f32>().ok()),
+                        height: element_data
+                            .attr(local_name!("height"))
+                            .and_then(|val| val.parse::<f32>().ok()),
+                    };
+                    let replaced_context = ReplacedContext {
+                        inherent_size: taffy::Size {
+                            width: 300.0,
+                            height: 150.0,
+                        },
+                        attr_size,
+                    };
+                    let computed = replaced_measure_function(
+                        inputs.known_dimensions,
+                        inputs.parent_size,
+                        inputs.available_space,
+                        &replaced_context,
+                        &node.style,
+                        false,
+                    );
+                    return taffy::LayoutOutput {
+                        size: computed,
+                        content_size: computed,
+                        first_baselines: taffy::Point::NONE,
+                        top_margin: CollapsibleMarginSet::ZERO,
+                        bottom_margin: CollapsibleMarginSet::ZERO,
+                        margins_can_collapse_through: false,
+                    };
+                }
+
                 if *element_data.name.local == *"img"
                     || *element_data.name.local == *"canvas"
                     || (cfg!(feature = "svg") && *element_data.name.local == *"svg")
