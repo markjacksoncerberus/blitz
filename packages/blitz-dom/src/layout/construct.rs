@@ -454,6 +454,10 @@ fn flush_pseudo_elements(doc: &mut BaseDocument, node_id: usize) {
                 match &items[0] {
                     ContentItem::String(owned_str) => {
                         let text_node_id = doc.create_text_node(owned_str);
+                        // Parent the text node: geometry queries walk parent
+                        // chains from glyph-run brush ids to find whose fragment
+                        // a run is; an orphan text node breaks that walk.
+                        doc.nodes[text_node_id].parent = Some(new_node_id);
                         doc.nodes[new_node_id].children.push(text_node_id);
                     }
                     _ => {

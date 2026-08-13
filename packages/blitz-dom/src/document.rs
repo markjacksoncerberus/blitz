@@ -1741,6 +1741,72 @@ impl BaseDocument {
         self.viewport_scroll = scroll;
     }
 
+    /// The document-relative fragment rect (x, y, w, h in CSS px) of an INLINE
+    /// element: the union of the glyph runs in its inline root's text layout
+    /// whose brush id is this node or a descendant of it. Taffy gives inline
+    /// non-replaced elements no box of their own (their `final_layout.size`
+    /// stays 0×0), so this is the only geometry a `<span>`/`<a>` has. Run
+    /// coordinates are relative to the root's CONTENT box and premultiplied by
+    /// the layout scale — the same convention the painter uses.
+    pub fn inline_fragment_rect(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+        use parley::PositionedLayoutItem;
+        let node = self.get_node(node_id)?;
+        let root = node.inline_root_ancestor()?;
+        if root.id == node_id {
+            return None;
+        }
+        let layout = &root.element_data()?.inline_layout_data.as_ref()?.layout;
+        let scale = layout.scale();
+        if scale == 0.0 {
+            return None;
+        }
+        // A run is stamped with the nearest STYLED node — the span itself for
+        // its own text, an inner span for nested text — so "ours" means the
+        // stamp is this node or one of its descendants.
+        let is_ours = |mut id: usize| -> bool {
+            loop {
+                if id == node_id {
+                    return true;
+                }
+                match self.get_node(id).and_then(|n| n.parent) {
+                    Some(p) => id = p,
+                    None => return false,
+                }
+            }
+        };
+        let mut rect: Option<(f32, f32, f32, f32)> = None;
+        for line in layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(gr) = item else {
+                    continue;
+                };
+                if !is_ours(gr.style().brush.id) {
+                    continue;
+                }
+                let m = gr.run().metrics();
+                let x0 = gr.offset();
+                let x1 = x0 + gr.advance();
+                let y0 = gr.baseline() - m.ascent;
+                let y1 = gr.baseline() + m.descent;
+                rect = Some(match rect {
+                    None => (x0, y0, x1, y1),
+                    Some((a, b, c, d)) => (a.min(x0), b.min(y0), c.max(x1), d.max(y1)),
+                });
+            }
+        }
+        let (x0, y0, x1, y1) = rect?;
+        let rpos = root.absolute_position(0.0, 0.0);
+        let rl = &root.final_layout;
+        let ox = rpos.x + rl.border.left + rl.padding.left;
+        let oy = rpos.y + rl.border.top + rl.padding.top;
+        Some((
+            ox + x0 / scale,
+            oy + y0 / scale,
+            (x1 - x0) / scale,
+            (y1 - y0) / scale,
+        ))
+    }
+
     /// Computes the size and position of the `Node` relative to the viewport
     pub fn get_client_bounding_rect(&self, node_id: usize) -> Option<BoundingRect> {
         let node = self.get_node(node_id)?;

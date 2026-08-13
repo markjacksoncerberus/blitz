@@ -22,6 +22,16 @@ pub(super) fn collect_list_item_children(
         children.reverse();
     }
     for child in children.into_iter() {
+        // <li value="10"> sets the item's ordinal (HTML §the-li-element) and
+        // later items continue from it. Forward lists only — a reversed list
+        // with explicit values keeps its simple reversed numbering.
+        if let Some(v) = doc.nodes[child]
+            .data
+            .attr(local_name!("value"))
+            .and_then(|v| v.trim().parse::<i64>().ok())
+        {
+            *index = v.max(1).saturating_sub(1) as usize;
+        }
         if let Some(layout) = node_list_item_child(doc, child, *index) {
             let node = &mut doc.nodes[child];
             node.element_data_mut().unwrap().list_item_data = Some(Box::new(layout));
