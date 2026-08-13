@@ -195,22 +195,6 @@ impl BaseDocument {
         // || !inline_layout.text.is_empty();
         // || !inline_layout.layout.inline_boxes().is_empty();
 
-        // Short circuit if inline context contains no text or inline boxes
-        if !has_styles_preventing_being_collapsed_through
-            && inline_layout.text.is_empty()
-            && inline_layout.layout.inline_boxes().is_empty()
-        {
-            // Put layout back
-            self.nodes[node_id]
-                .data
-                .downcast_element_mut()
-                .unwrap()
-                .inline_layout_data = Some(inline_layout);
-            return LayoutOutput::from_outer_size(
-                Size::ZERO.maybe_max(container_pb.sum_axes().map(Some)),
-            );
-        }
-
         // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
         // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
         let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
@@ -242,6 +226,33 @@ impl BaseDocument {
                 (node_size, style_min_size, style_max_size, aspect_ratio)
             }
         };
+
+        // Short circuit if inline context contains no text or inline boxes.
+        // ⚠️ Only when the node has no definite size of its own. This early-out
+        // used to run BEFORE the style sizes were resolved, so a
+        // `width:20px;height:10px` block whose only inline content was an EMPTY
+        // <span> came back 0×0 (and contributed nothing to flow): the box
+        // vanished from getBoundingClientRect / offsetWidth and from container
+        // query evaluation. An explicitly sized element cannot be collapsed
+        // through; it takes the full sizing path below.
+        if !has_styles_preventing_being_collapsed_through
+            && inline_layout.text.is_empty()
+            && inline_layout.layout.inline_boxes().is_empty()
+            && node_size.width.is_none()
+            && node_size.height.is_none()
+            && node_min_size.width.is_none()
+            && node_min_size.height.is_none()
+        {
+            // Put layout back
+            self.nodes[node_id]
+                .data
+                .downcast_element_mut()
+                .unwrap()
+                .inline_layout_data = Some(inline_layout);
+            return LayoutOutput::from_outer_size(
+                Size::ZERO.maybe_max(container_pb.sum_axes().map(Some)),
+            );
+        }
 
         // Compute available space
         let available_space = Size {
