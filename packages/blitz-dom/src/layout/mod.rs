@@ -307,7 +307,35 @@ impl BaseDocument {
 
                 // The default CSS file will set
                 match node.style.display {
-                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
+                    Display::Block => {
+                        let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
+                        // An empty list item still shows its outside marker on
+                        // its own line: the item gets the marker's line box
+                        // (CSS 2.1 §12.5 — the marker aligns with the first
+                        // line box, which exists even when the principal box
+                        // has no content). Without a height every empty <li>
+                        // stacks at the same y and their markers overlap.
+                        if output.size.height == 0.0 {
+                            use crate::node::{ListItemLayout, ListItemLayoutPosition};
+                            if let Some(ListItemLayout {
+                                position: ListItemLayoutPosition::Outside(marker_layout),
+                                ..
+                            }) = self.nodes[usize::from(node_id)]
+                                .element_data()
+                                .and_then(|el| el.list_item_data.as_deref())
+                            {
+                                let marker_height =
+                                    marker_layout.height() / marker_layout.scale();
+                                if marker_height > 0.0 {
+                                    output.size.height = marker_height;
+                                    output.content_size.height =
+                                        output.content_size.height.max(marker_height);
+                                    output.margins_can_collapse_through = false;
+                                }
+                            }
+                        }
+                        output
+                    }
                     Display::Flex => compute_flexbox_layout(self, node_id, inputs),
                     Display::Grid => compute_grid_layout(self, node_id, inputs),
                     Display::None => taffy::LayoutOutput::HIDDEN,

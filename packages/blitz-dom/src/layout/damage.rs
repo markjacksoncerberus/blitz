@@ -346,15 +346,28 @@ impl BaseDocument {
         let layout_ctx = &mut self.layout_ctx;
 
         let mut anon_nodes = Vec::new();
+        let mut list_item_parents = Vec::new();
 
         for (_, node) in self.nodes.iter_mut() {
             if !(node.flags.contains(NodeFlags::IS_IN_DOCUMENT)) {
                 continue;
             }
 
+            let parent = node.parent;
             let Some(element) = node.data.downcast_element_mut() else {
                 continue;
             };
+
+            // An outside marker is a text layout too, but it lives in
+            // `list_item_data` and is only rebuilt when the item's PARENT is
+            // reconstructed (`collect_list_item_children` runs at the
+            // container). Without this, a marker measured before a webfont
+            // arrived keeps its fallback-font layout forever.
+            if element.list_item_data.is_some() {
+                if let Some(parent_id) = parent {
+                    list_item_parents.push(parent_id);
+                }
+            }
 
             if element.inline_layout_data.is_some() {
                 if node.is_anonymous() {
@@ -374,6 +387,9 @@ impl BaseDocument {
             if let Some(parent_id) = *(self.nodes[node_id].layout_parent.get_mut()) {
                 self.nodes[parent_id].insert_damage(ALL_DAMAGE);
             }
+        }
+        for parent_id in list_item_parents {
+            self.nodes[parent_id].insert_damage(ALL_DAMAGE);
         }
     }
 

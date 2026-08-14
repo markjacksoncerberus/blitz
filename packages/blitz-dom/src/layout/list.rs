@@ -44,6 +44,28 @@ pub(super) fn collect_list_item_children(
                 element_data.list_item_data = None;
             }
         }
+        // A ::before/::after with `display: list-item` generates a marker of
+        // its own (css-lists: any list-item box gets one; the pseudo inherits
+        // list-style-* from its originating element). The pseudo nodes are not
+        // in `children`, so they are visited explicitly.
+        let pseudos = {
+            let node = &doc.nodes[child];
+            [node.before, node.after]
+        };
+        for pe in pseudos.into_iter().flatten() {
+            if let Some(layout) = node_list_item_child(doc, pe, *index) {
+                let node = &mut doc.nodes[pe];
+                if let Some(element_data) = node.element_data_mut() {
+                    element_data.list_item_data = Some(Box::new(layout));
+                    *index += 1;
+                }
+            } else {
+                let node = &mut doc.nodes[pe];
+                if let Some(element_data) = node.element_data_mut() {
+                    element_data.list_item_data = None;
+                }
+            }
+        }
     }
 }
 
